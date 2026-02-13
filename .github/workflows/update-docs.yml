@@ -1,0 +1,80 @@
+name: Update Docs
+on:
+  push:
+    branches: [main]
+
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if docs update needed
+        id: check
+        run: |
+          CHANGED=$(git diff HEAD~1 --name-only)
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          DIFF_STAT=$(git diff HEAD~1 --stat)
+          echo "diff_stat<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF_STAT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Skip if only docs changed (avoid infinite loop)
+          NON_DOC_CHANGES=$(echo "$CHANGED" | grep -v '^\.claude/docs/' | grep -v '^docs/' | grep -v 'CLAUDE.md' || true)
+          if [ -z "$NON_DOC_CHANGES" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Only doc files changed — skipping to avoid loop"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update docs from diff
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          claude --print "
+          The following files changed in the latest commit:
+          ${{ steps.check.outputs.changed_files }}
+
+          Diff summary:
+          ${{ steps.check.outputs.diff_stat }}
+
+          Read the current documentation:
+          - .claude/docs/architecture.md
+          - .claude/docs/dependency-graph.md
+          - docs/agent-instructions.md
+
+          Then read ONLY the changed files listed above.
+
+          Determine if any documentation needs updating based on what changed.
+          If nothing doc-worthy changed (e.g., CSS tweak, typo fix, test update), do nothing.
+          If something structural changed (new endpoint, new service, new dependency,
+          new proto domain, changed ports, new env vars, renamed files), update only
+          the affected sections in the documentation files.
+
+          Rules:
+          - Only update sections that are actually stale
+          - Keep the existing format and style
+          - Do not add fluff or expand concise sections unnecessarily
+          - If no updates needed, output 'NO_CHANGES' and do nothing
+          "
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Commit doc updates
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .claude/docs/ docs/agent-instructions.md CLAUDE.md */CLAUDE.md
+          if git diff --cached --quiet; then
+            echo "No doc changes to commit"
+          else
+            git commit -m "docs: auto-update from $(git log -1 --format='%h') [skip ci]"
+            git push
+          fi
