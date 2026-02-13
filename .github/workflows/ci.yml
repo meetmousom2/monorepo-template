@@ -1,0 +1,99 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+      api: ${{ steps.filter.outputs.api }}
+      proto: ${{ steps.filter.outputs.proto }}
+      db: ${{ steps.filter.outputs.db }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            web:
+              - 'apps/web/**'
+              - 'packages/**'
+            api:
+              - 'apps/api/**'
+              - 'libs/**'
+            proto:
+              - 'proto/**'
+            db:
+              - 'supabase/migrations/**'
+
+  test-web:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.web == 'true' || needs.detect-changes.outputs.proto == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm turbo test --filter=@repo/web...
+      - run: pnpm turbo lint --filter=@repo/web...
+
+  test-api:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.api == 'true' || needs.detect-changes.outputs.proto == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: cd apps/api && uv sync --all-extras
+      - run: cd apps/api && uv run pytest tests/unit/
+      - run: cd apps/api && uv run ruff check .
+
+  check-proto:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.proto == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+      - run: buf lint proto/
+      - run: buf breaking proto/ --against '.git#branch=main'
+
+  test-migrations:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.db == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+      - run: supabase start
+      - run: supabase db reset
+      - run: supabase stop
+
+  freshness-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Documented commands exist in Justfile
+        run: |
+          if command -v just &> /dev/null && [ -f CLAUDE.md ]; then
+            grep -oP 'just \K[\w-]+' CLAUDE.md | while read cmd; do
+              just --list | grep -q "$cmd" || \
+                (echo "ERROR: CLAUDE.md references 'just $cmd' but it doesn't exist" && exit 1)
+            done
+          fi
+      - name: Doc file paths are valid
+        run: |
+          grep -rhoP '(?:apps|packages|libs|proto|supabase)/[\w/.-]+' \
+            CLAUDE.md */CLAUDE.md .claude/docs/ docs/ 2>/dev/null | \
+            sort -u | while read path; do
+              [ -e "$path" ] || [ -d "$path" ] || \
+                echo "WARNING: Docs reference '$path' but it doesn't exist"
+          done || true

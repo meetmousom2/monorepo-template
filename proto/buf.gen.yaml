@@ -1,0 +1,10 @@
+version: v2
+plugins:
+  # TypeScript
+  - remote: buf.build/connectrpc/es
+    out: ../packages/generated-ts
+    opt:
+      - target=ts
+  # Python
+  - remote: buf.build/protocolbuffers/python
+    out: ../libs/generated-py
